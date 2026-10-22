@@ -1,0 +1,132 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "opsdeck.name" . }}
+  labels: {{- include "opsdeck.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy: { type: Recreate }  # SQLite audit DB on a RWO volume
+  selector:
+    matchLabels: {{- include "opsdeck.selector" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "opsdeck.selector" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ toJson .Values.config | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "opsdeck.name" . }}
+      automountServiceAccountToken: {{ .Values.kubernetes.enabled }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: opsdeck
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            # With oauth2-proxy the app only listens on localhost inside the pod,
+            # so identity headers can only come from the proxy.
+            - name: OPSDECK_HOST
+              value: {{ ternary "127.0.0.1" "0.0.0.0" .Values.oauth2Proxy.enabled | quote }}
+            - name: OPSDECK_AUTH_MODE
+              value: {{ ternary "proxy" "local" .Values.oauth2Proxy.enabled | quote }}
+            - name: OPSDECK_ADMINS
+              value: {{ .Values.roles.admins | quote }}
+            - name: OPSDECK_OPERATORS
+              value: {{ .Values.roles.operators | quote }}
+            - name: OPSDECK_DEFAULT_ROLE
+              value: {{ .Values.roles.defaultRole | quote }}
+            - name: K8S_ENABLED
+              value: {{ .Values.kubernetes.enabled | quote }}
+            {{- if .Values.kubernetes.namespaces }}
+            - name: K8S_NAMESPACES
+              value: {{ join "," .Values.kubernetes.namespaces | quote }}
+            {{- end }}
+            {{- range $k, $v := .Values.config }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- if .Values.existingSecret }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.existingSecret }}
+                optional: true
+          {{- end }}
+          ports:
+            - { name: app, containerPort: 8080 }
+          {{- if not .Values.oauth2Proxy.enabled }}
+          readinessProbe:
+            httpGet: { path: /readyz, port: app }
+          livenessProbe:
+            httpGet: { path: /healthz, port: app }
+            initialDelaySeconds: 10
+          {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: tmp, mountPath: /tmp }
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+        {{- if .Values.oauth2Proxy.enabled }}
+        - name: oauth2-proxy
+          image: {{ .Values.oauth2Proxy.image }}
+          args:
+            - --http-address=0.0.0.0:4180
+            - --upstream=http://127.0.0.1:8080/
+            - --provider={{ .Values.oauth2Proxy.provider }}
+            {{- if .Values.oauth2Proxy.oidcIssuerUrl }}
+            - --oidc-issuer-url={{ .Values.oauth2Proxy.oidcIssuerUrl }}
+            {{- end }}
+            {{- range .Values.oauth2Proxy.emailDomains }}
+            - --email-domain={{ . }}
+            {{- end }}
+            - --pass-user-headers=true
+            - --reverse-proxy=true
+            - --cookie-secure=true
+            - --skip-provider-button=true
+            - --ping-path=/oauth2/ping
+            {{- range .Values.oauth2Proxy.extraArgs }}
+            - {{ . }}
+            {{- end }}
+          env:
+            - name: OAUTH2_PROXY_CLIENT_ID
+              valueFrom: { secretKeyRef: { name: {{ .Values.oauth2Proxy.existingSecret }}, key: client-id } }
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: {{ .Values.oauth2Proxy.existingSecret }}, key: client-secret } }
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom: { secretKeyRef: { name: {{ .Values.oauth2Proxy.existingSecret }}, key: cookie-secret } }
+          ports:
+            - { name: proxy, containerPort: 4180 }
+          readinessProbe:
+            httpGet: { path: /oauth2/ping, port: proxy }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+        {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "opsdeck.name" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}

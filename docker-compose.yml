@@ -1,0 +1,21 @@
+# Local run in a container. Opens http://localhost:8080
+# Reads ./.env if present; mounts your kubeconfig and AWS profiles read-only.
+services:
+  opsdeck:
+    build: .
+    image: opsdeck:local
+    ports:
+      - "127.0.0.1:8080:8080"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      OPSDECK_AUTH_MODE: local
+      KUBECONFIG: /home/opsdeck/.kube/config
+    volumes:
+      - opsdeck-data:/data
+      - ${HOME}/.kube:/home/opsdeck/.kube:ro
+      - ${HOME}/.aws:/home/opsdeck/.aws:ro
+
+volumes:
+  opsdeck-data:

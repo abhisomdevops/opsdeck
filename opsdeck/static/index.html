@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpsDeck</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+  <script type="module" src="/static/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/overview">
+      <img src="/static/favicon.svg" alt="" width="20" height="20">
+      <span>OpsDeck</span>
+    </a>
+    <span id="env" class="pill env"></span>
+    <span id="writes" class="pill"></span>
+    <span class="spacer"></span>
+    <a id="audit-link" class="toplink" href="#/audit" hidden>Audit log</a>
+    <span id="who" class="who"></span>
+    <button id="chat-toggle" class="btn ghost" type="button" aria-expanded="true">Assistant</button>
+  </header>
+  <div class="shell">
+    <nav id="nav" class="nav" aria-label="Integrations"></nav>
+    <main id="view" class="view" tabindex="-1"></main>
+    <aside id="chat" class="chat" aria-label="Assistant">
+      <div class="chat-head">
+        <strong>Assistant</strong>
+        <span id="chat-status" class="muted small"></span>
+        <button id="chat-clear" class="btn ghost small" type="button">New chat</button>
+      </div>
+      <div id="chat-log" class="chat-log" aria-live="polite"></div>
+      <form id="chat-form" class="chat-form">
+        <textarea id="chat-input" rows="3" placeholder="Ask about your systems, e.g. why is payments-worker crashing?"></textarea>
+        <button class="btn primary" type="submit">Send</button>
+      </form>
+    </aside>
+  </div>
+  <dialog id="modal" class="modal"></dialog>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+</body>
+</html>

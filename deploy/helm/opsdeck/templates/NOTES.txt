@@ -1,0 +1,13 @@
+OpsDeck is installed.
+
+{{- if .Values.oauth2Proxy.enabled }}
+Users sign in through oauth2-proxy. Roles: admins={{ .Values.roles.admins | default "(none)" }}, operators={{ .Values.roles.operators | default "(none)" }}, everyone else={{ .Values.roles.defaultRole }}.
+{{- else }}
+WARNING: authentication is OFF (oauth2Proxy.enabled=false). Anyone who can reach the
+Service is admin. Use only with port-forward:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "opsdeck.name" . }} 8080:{{ .Values.service.port }}
+  open http://localhost:8080
+{{- end }}
+
+Live write actions: {{ .Values.config.OPSDECK_ENABLE_WRITES }}   Kubernetes write RBAC: {{ .Values.kubernetes.allowWrites }}

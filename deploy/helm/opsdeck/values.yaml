@@ -1,0 +1,84 @@
+image:
+  repository: opsdeck
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Non-secret settings (become env vars). See .env.example for every option.
+config:
+  OPSDECK_ENV_NAME: prod
+  OPSDECK_DEMO: "auto"
+  OPSDECK_ENABLE_WRITES: "false"
+  OPSDECK_LLM_PROVIDER: anthropic
+  # K8S_NAMESPACES: "payments,checkout,flux-system"
+  # AWS_REGIONS: "us-east-1"
+  # ARGOCD_URL: https://argocd.acme.internal
+  # JENKINS_URL: https://jenkins.acme.internal
+  # JIRA_URL: https://acme.atlassian.net
+  # CONFLUENCE_URL: https://acme.atlassian.net/wiki
+  # ARTIFACTORY_URL: https://acme.jfrog.io/artifactory
+  # PRISMA_URL: https://api.prismacloud.io
+
+# Name of an existing Secret holding tokens (ANTHROPIC_API_KEY, ARGOCD_TOKEN,
+# JENKINS_USER, JENKINS_TOKEN, JIRA_USER, JIRA_TOKEN, CONFLUENCE_USER, CONFLUENCE_TOKEN,
+# ARTIFACTORY_TOKEN, PRISMA_ACCESS_KEY, PRISMA_SECRET_KEY, OPSDECK_SECRET).
+# Create it with: kubectl -n opsdeck create secret generic opsdeck-secrets --from-env-file=prod.env
+existingSecret: opsdeck-secrets
+
+# Who can do what when oauth2Proxy is enabled (emails, comma-separated).
+roles:
+  admins: ""
+  operators: ""
+  defaultRole: viewer
+
+# Authentication. Leave disabled ONLY for single-user access via `kubectl port-forward`
+# (everyone who can reach the Service is admin). Enable for any shared use.
+oauth2Proxy:
+  enabled: false
+  image: quay.io/oauth2-proxy/oauth2-proxy:v7.7.1
+  # Secret with client-id, client-secret, cookie-secret keys
+  existingSecret: opsdeck-oauth2
+  provider: oidc
+  oidcIssuerUrl: ""          # e.g. https://login.microsoftonline.com/<tenant>/v2.0 or your Okta issuer
+  emailDomains: ["*"]
+  extraArgs: []
+
+kubernetes:
+  enabled: true               # use the in-cluster service account
+  # Grant write verbs (rollout restart, scale, Flux reconcile). Reads are always granted.
+  allowWrites: false
+  # Limit RBAC to these namespaces (Role per namespace). Empty = ClusterRole (all namespaces).
+  namespaces: []
+
+serviceAccount:
+  # e.g. eks.amazonaws.com/role-arn for IRSA so the AWS widget uses a read-only IAM role
+  annotations: {}
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: ""
+  host: opsdeck.example.com
+  annotations: {}
+  tlsSecret: ""
+
+persistence:
+  enabled: false              # keep the audit DB across restarts
+  size: 1Gi
+  storageClass: ""
+
+resources:
+  requests: { cpu: 100m, memory: 192Mi }
+  limits: { memory: 512Mi }
+
+# e.g. mount a CA bundle and set config.OPSDECK_CA_BUNDLE=/etc/opsdeck-ca/ca.pem
+extraVolumes: []
+#  - name: corp-ca
+#    configMap: { name: corp-ca }
+extraVolumeMounts: []
+#  - { name: corp-ca, mountPath: /etc/opsdeck-ca, readOnly: true }
+
+nodeSelector: {}
+tolerations: []
