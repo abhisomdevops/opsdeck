@@ -1,0 +1,18 @@
+{
+  "id": "incident-board",
+  "title": "Incident board",
+  "description": "PagerDuty incidents, Prometheus and Grafana alerts and Jira incidents in one list, worst first.",
+  "category": "Incidents",
+  "width": "full",
+  "height": 360,
+  "refresh_secs": 30,
+  "inputs": [],
+  "sources": [
+    {"id": "pd", "integration": "pagerduty", "op": "incidents", "params": {}},
+    {"id": "prom", "integration": "prometheus", "op": "alerts", "params": {"state": "firing"}},
+    {"id": "graf", "integration": "grafana", "op": "alerts", "params": {"state": "firing"}},
+    {"id": "jira", "integration": "jira", "op": "search", "params": {"jql": "issuetype = Incident AND statusCategory != Done ORDER BY priority DESC", "limit": 20}}
+  ],
+  "uses": ["pagerduty.acknowledge"],
+  "status": "published"
+}

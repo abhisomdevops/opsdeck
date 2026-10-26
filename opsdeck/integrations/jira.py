@@ -7,12 +7,27 @@ token (leave JIRA_USER empty to use Bearer auth).
 
 from __future__ import annotations
 
+import re
+
 from ..config import env
 from ..registry import Column, Integration, Param, RowAction, Section, action, read_op
 from ._common import ago, check, http_client, iso
 
 FIELDS = "summary,status,priority,assignee,updated,issuetype,labels"
 DEFAULT_JQL = "statusCategory != Done AND priority in (Highest, High) ORDER BY updated DESC"
+
+
+_KEY = re.compile(r"\b([A-Z][A-Z0-9_]+-\d+)\b")
+
+
+def issue_key(ref: str) -> str:
+    """Accept a key (OPS-12), a browse URL, or a URL with ?selectedIssue=OPS-12."""
+    m = _KEY.search((ref or "").upper() if "://" not in (ref or "") else ref)
+    if not m:
+        from ..registry import OpError
+
+        raise OpError(f"could not find a Jira issue key in '{ref}'")
+    return m.group(1)
 
 
 def is_cloud() -> bool:
@@ -60,8 +75,10 @@ class Jira(Integration):
             data = check(c.get(path, params=params)).json()
         return [self._row(i) for i in data.get("issues", [])]
 
-    @read_op("Full details of one issue including recent comments.", (Param("key", required=True),))
+    @read_op("Full details of one issue including recent comments. Accepts a key or a full issue URL.",
+             (Param("key", required=True, description="Issue key (OPS-12) or browse URL"),))
     def issue(self, key):
+        key = issue_key(key)
         with self._client() as c:
             i = check(c.get(f"/rest/api/2/issue/{key}",
                             params={"fields": FIELDS + ",description,reporter,created,comment"})).json()
@@ -81,6 +98,7 @@ class Jira(Integration):
         Param("key", required=True), Param("body", required=True, description="Comment text"),
     ), risk="low")
     def add_comment(self, key, body):
+        key = issue_key(key)
         with self._client() as c:
             r = check(c.post(f"/rest/api/2/issue/{key}/comment", json={"body": body})).json()
         return {"commented": key, "id": r.get("id")}
@@ -120,6 +138,7 @@ class Jira(Integration):
                 for k, t, s, st, p, a, h in self._ISSUES][:limit]
 
     def demo_issue(self, key):
+        key = issue_key(key)
         row = next((r for r in self.demo_search() if r["key"] == key), self.demo_search()[0])
         return dict(row, reporter="PagerDuty", created=ago(hours=5), labels="sev2, payments",
                     description="payments-worker pods entering CrashLoopBackOff since the 1.42.0 rollout.\n"

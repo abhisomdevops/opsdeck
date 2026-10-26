@@ -2,26 +2,34 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutTimeout
 from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import __version__
 from .actions import ActionService
-from .assistant import Assistant
+from .assistant import Assistant, ExtraTool
 from .audit import AuditLog
 from .auth import User, current_user, require
 from .config import Settings, get_settings
 from .integrations import ALL_INTEGRATIONS
+from .llm import Providers
+from .playbooks import Playbooks
 from .registry import OpError, Registry
+from .widgets import WidgetService
+from .widgets.builder import WidgetBuilder
+from .widgets.frame import frame_html
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("opsdeck")
@@ -33,6 +41,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 class PrepareBody(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
+    widget: str | None = None  # set when a widget proposes the action
 
 
 class ExecuteBody(BaseModel):
@@ -46,6 +55,49 @@ class ChatMessage(BaseModel):
 
 class ChatBody(BaseModel):
     messages: list[ChatMessage]
+    provider: str | None = None
+    model: str | None = None
+    playbook: str | None = None
+
+
+class WidgetBody(BaseModel):
+    manifest: dict[str, Any]
+    view_js: str = ""
+    data_py: str | None = None
+
+
+class StatusBody(BaseModel):
+    status: str
+
+
+class RollbackBody(BaseModel):
+    version: str
+
+
+class GenerateBody(BaseModel):
+    prompt: str
+    widget_id: str | None = None
+    provider: str | None = None
+    model: str | None = None
+
+
+class DashboardBody(BaseModel):
+    items: list[dict[str, Any]]
+
+
+def sse(events: Iterator[dict]) -> Iterator[str]:
+    """Server-sent events from a sync generator; errors become an error event."""
+    try:
+        for ev in events:
+            yield f"data: {json.dumps(ev, default=str)}\n\n"
+    except OpError as exc:
+        yield f"data: {json.dumps({'type': 'error', 'detail': str(exc)})}\n\n"
+    except Exception as exc:  # noqa: BLE001
+        log.exception("stream failed")
+        yield f"data: {json.dumps({'type': 'error', 'detail': f'internal error: {exc}'})}\n\n"
+
+
+SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
 
 def create_app(settings: Settings | None = None, integrations: list | None = None,
@@ -54,13 +106,49 @@ def create_app(settings: Settings | None = None, integrations: list | None = Non
     registry = Registry(settings, integrations if integrations is not None else ALL_INTEGRATIONS)
     audit = AuditLog(settings.data_dir / "audit.db")
     actions = ActionService(settings, registry, audit)
-    assistant = Assistant(settings, registry, actions, client=llm_client)
+    providers = Providers(settings, anthropic_client=llm_client)
+    playbooks = Playbooks(settings.data_dir)
+    assistant = Assistant(settings, registry, actions, providers=providers, playbooks=playbooks)
+    widgets = WidgetService(settings, registry, audit, all_classes=ALL_INTEGRATIONS)
+    builder = WidgetBuilder(settings, widgets, providers)
     pool = ThreadPoolExecutor(max_workers=16, thread_name_prefix="opsdeck")
 
-    app = FastAPI(title="OpsDeck", version=__version__, docs_url="/api/docs", redoc_url=None)
+    def _build_widget_tool(user: User, args: dict):
+        res = builder.build(user, args.get("description", ""), widget_id=args.get("widget_id") or None)
+        w = res["widget"]
+        if not w:
+            return {"ok": False, "errors": res["errors"] or ["the builder did not save a widget"], "notes": res["notes"]}
+        return {"_event": "widget", "ok": res["ok"], "id": w["id"], "title": w["title"], "status": w["status"],
+                "python": w["python"], "errors": w["errors"], "notes": res["notes"][-1:] if res["notes"] else []}
+
+    assistant.register_tool(ExtraTool(
+        name="opsdeck__build_widget",
+        description=("Build a new console widget, or change an existing one, from a plain-English description "
+                     "(data to show, filters, visual, refresh, row actions). Saves it as a draft and returns its id."),
+        schema={"type": "object", "properties": {
+            "description": {"type": "string", "description": "Precise description of the widget or the change"},
+            "widget_id": {"type": "string", "description": "Existing widget id to modify (omit to create)"}},
+            "required": ["description"]},
+        fn=_build_widget_tool, min_role="operator"))
+    assistant.register_tool(ExtraTool(
+        name="opsdeck__list_widgets", description="List the console's widgets (id, title, description, status).",
+        schema={"type": "object", "properties": {}},
+        fn=lambda _u, _a: [{k: w[k] for k in ("id", "title", "description", "status", "source")} for w in widgets.list()]))
+
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        widgets.start_watcher()
+        yield
+        widgets.stop_watcher()
+
+    app = FastAPI(title="OpsDeck", version=__version__, docs_url="/api/docs", redoc_url=None, lifespan=lifespan)
     app.state.settings = settings
     app.state.registry = registry
     app.state.audit = audit
+    app.state.widgets = widgets
+    app.state.assistant = assistant
 
     # ---------------------------------------------------------- middleware
     @app.middleware("http")
@@ -72,11 +160,14 @@ def create_app(settings: Settings | None = None, integrations: list | None = Non
                 return JSONResponse({"detail": "missing X-OpsDeck header"}, status_code=403)
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
-            "connect-src 'self'; frame-ancestors 'none'")
+        if request.url.path.startswith("/w/"):  # widget frames set their own CSP
+            response.headers["X-Frame-Options"] = "SAMEORIGIN"
+        else:
+            response.headers["X-Frame-Options"] = "DENY"
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
+                "connect-src 'self'; frame-src 'self'; frame-ancestors 'none'")
         return response
 
     @app.exception_handler(OpError)
@@ -129,7 +220,11 @@ def create_app(settings: Settings | None = None, integrations: list | None = Non
 
     @app.post("/api/integrations/{name}/actions/{op}/prepare")
     def prepare(name: str, op: str, body: PrepareBody, user: User = Depends(current_user)):
-        return actions.prepare(user, name, op, body.params, via="ui")
+        via = "ui"
+        if body.widget:
+            widgets.check_action(body.widget, name, op)
+            via = f"widget:{body.widget}"
+        return actions.prepare(user, name, op, body.params, via=via)
 
     @app.post("/api/actions/execute")
     def execute(body: ExecuteBody, user: User = Depends(current_user)):
@@ -174,9 +269,125 @@ def create_app(settings: Settings | None = None, integrations: list | None = Non
 
     @app.post("/api/chat")
     def chat(body: ChatBody, user: User = Depends(current_user)):
-        if not assistant.available:
+        if not assistant.available and not body.provider:
             raise HTTPException(503, assistant.status()["detail"])
-        return assistant.run(user, [m.model_dump() for m in body.messages])
+        return assistant.run(user, [m.model_dump() for m in body.messages], provider=body.provider,
+                             model=body.model, playbook=body.playbook)
+
+    @app.post("/api/chat/stream")
+    def chat_stream(body: ChatBody, user: User = Depends(current_user)):
+        if not assistant.available and not body.provider:
+            raise HTTPException(503, assistant.status()["detail"])
+        events = assistant.stream(user, [m.model_dump() for m in body.messages], provider=body.provider,
+                                  model=body.model, playbook=body.playbook)
+        return StreamingResponse(sse(events), media_type="text/event-stream", headers=SSE_HEADERS)
+
+    @app.get("/api/llm/providers")
+    def llm_providers(_user: User = Depends(current_user)):
+        return providers.status()
+
+    @app.get("/api/llm/models")
+    def llm_models(provider: str, _user: User = Depends(current_user)):
+        return {"provider": provider, "models": providers.get(provider).list_models()}
+
+    @app.get("/api/playbooks")
+    def list_playbooks(_user: User = Depends(current_user)):
+        return [{k: v for k, v in p.items() if k != "instructions"} for p in playbooks.all()]
+
+    # -------------------------------------------------------------- widgets
+    @app.get("/api/widgets")
+    def list_widgets(_user: User = Depends(current_user)):
+        return widgets.list()
+
+    @app.get("/api/widgets/catalog")
+    def widget_catalog(_user: User = Depends(current_user)):
+        return sorted(widgets.catalog().values(), key=lambda c: c["id"])
+
+    @app.get("/api/widgets/guide", include_in_schema=False)
+    def widget_guide(_user: User = Depends(current_user)):
+        from .widgets.builder import GUIDE
+
+        return {"markdown": GUIDE}
+
+    @app.post("/api/widgets/generate")
+    def generate_widget(body: GenerateBody, user: User = Depends(current_user)):
+        return builder.build(user, body.prompt, widget_id=body.widget_id, provider=body.provider, model=body.model)
+
+    @app.post("/api/widgets/generate/stream")
+    def generate_widget_stream(body: GenerateBody, user: User = Depends(current_user)):
+        widgets._require_author(user)
+        events = builder.stream(user, body.prompt, widget_id=body.widget_id, provider=body.provider, model=body.model)
+        return StreamingResponse(sse(events), media_type="text/event-stream", headers=SSE_HEADERS)
+
+    @app.post("/api/widgets/validate")
+    def validate_widget(body: WidgetBody, _user: User = Depends(current_user)):
+        return widgets.validate(body.manifest, body.view_js, body.data_py)
+
+    @app.get("/api/widgets/{wid}")
+    def get_widget(wid: str, _user: User = Depends(current_user)):
+        return widgets.detail(wid)
+
+    @app.put("/api/widgets/{wid}")
+    def put_widget(wid: str, body: WidgetBody, user: User = Depends(current_user)):
+        return widgets.save(user, wid, body.manifest, body.view_js, body.data_py)
+
+    @app.delete("/api/widgets/{wid}")
+    def delete_widget(wid: str, user: User = Depends(current_user)):
+        return widgets.delete(user, wid)
+
+    @app.post("/api/widgets/{wid}/status")
+    def widget_status(wid: str, body: StatusBody, user: User = Depends(current_user)):
+        return widgets.set_status(user, wid, body.status)
+
+    @app.post("/api/widgets/{wid}/approve")
+    def approve_widget(wid: str, user: User = Depends(current_user)):
+        return widgets.approve(user, wid)
+
+    @app.post("/api/widgets/{wid}/rollback")
+    def rollback_widget(wid: str, body: RollbackBody, user: User = Depends(current_user)):
+        return widgets.rollback(user, wid, body.version)
+
+    @app.get("/api/widgets/{wid}/data")
+    def widget_data(wid: str, request: Request, user: User = Depends(current_user)):
+        return widgets.data(user, wid, dict(request.query_params))
+
+    @app.get("/api/widgets/{wid}/ops/{name}/{op}")
+    def widget_read(wid: str, name: str, op: str, request: Request, _user: User = Depends(current_user)):
+        return {"data": widgets.bridged_read(wid, name, op, dict(request.query_params))}
+
+    @app.get("/w/{wid}/frame", include_in_schema=False)
+    def widget_frame(wid: str, _user: User = Depends(current_user)):
+        w = widgets.get(wid)
+        html, csp = frame_html(w["files"].get("view.js", ""))
+        return HTMLResponse(html, headers={"Content-Security-Policy": csp, "Cache-Control": "no-store"})
+
+    @app.get("/api/dashboard")
+    def get_dashboard(user: User = Depends(current_user)):
+        return {"items": widgets.dashboard(user)}
+
+    @app.put("/api/dashboard")
+    def put_dashboard(body: DashboardBody, user: User = Depends(current_user)):
+        return {"items": widgets.save_dashboard(user, body.items)}
+
+    @app.get("/api/events")
+    async def events(request: Request, _user: User = Depends(current_user)):
+        q = widgets.bus.subscribe()
+
+        async def gen():
+            try:
+                yield "retry: 3000\n\n"
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    try:
+                        ev = await asyncio.wait_for(q.get(), timeout=15)
+                        yield f"data: {json.dumps(ev, default=str)}\n\n"
+                    except TimeoutError:
+                        yield ": keep-alive\n\n"
+            finally:
+                widgets.bus.unsubscribe(q)
+
+        return StreamingResponse(gen(), media_type="text/event-stream", headers=SSE_HEADERS)
 
     # ------------------------------------------------------------ static UI
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

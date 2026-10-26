@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "opsdeck"
-version = "0.1.0"
-description = "SRE / production operations console with an AI assistant"
+version = "0.2.0"
+description = "AI-agent SRE platform: one console for incidents, observability, Kubernetes, delivery and security, with hot-reloadable AI-built widgets"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -28,7 +28,7 @@ opsdeck = "opsdeck.main:run"
 include = ["opsdeck*"]
 
 [tool.setuptools.package-data]
-opsdeck = ["static/*"]
+opsdeck = ["static/*", "playbooks/*.md", "widgets/*.js", "widgets/*.css", "widgets/*.md", "widgets_builtin/*/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

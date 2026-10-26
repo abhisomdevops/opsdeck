@@ -1,12 +1,36 @@
 # OpsDeck
 
-A web console for SRE and production operations. One screen for Kubernetes, Flux, Argo CD, Jenkins, Artifactory, AWS, Prisma Cloud, Jira and Confluence, plus an AI assistant that can investigate across all of them.
+An AI-agent SRE platform: one console where SRE engineers run incidents, read metrics, logs and traces, manage Kubernetes across clusters, chase CVEs, and turn tickets into pull requests, with an AI agent that works across all of it and widgets you can build by describing them.
 
-- **Overview page** ranks what needs attention across every system: crashlooping pods, out-of-sync apps, firing alarms, failing builds and critical security alerts.
-- **A widget per system** has tables, filters, logs and drill-downs.
-- **Gated actions:** rollout restart, scale, Argo CD sync, Flux reconcile, Jenkins build and Jira comment. Each one needs an explicit confirmation, is signed to your identity, is single-use, and is written to an audit log.
-- **The AI assistant** (Claude, or Claude on AWS Bedrock) calls the same integrations as tools. It can read freely. It can only *propose* changes, and you click to run them.
-- **Demo mode:** any system you haven't configured shows realistic sample data, so you can try everything with zero credentials.
+![Dashboard](docs/img/dashboard.png)
+
+- **AI agent on any LLM.** Claude (API or Bedrock), OpenAI or any OpenAI-compatible gateway (Azure OpenAI, vLLM, LiteLLM, OpenRouter), Gemini, or Ollama for air-gapped use. Users pick the provider and model per conversation. The agent calls every integration as a tool, streams its investigation step by step, and can only *propose* changes.
+- **Playbooks** steer it for common work: Incident RCA, Ticket to PR, CVE remediation, Kubernetes triage, Postmortem draft, Build a widget. Teams add their own as Markdown files; edits apply immediately.
+- **Widgets you build by asking.** Describe a widget ("p99 latency and 5xx for checkout-web with the firing alerts below"); the AI samples the real data, writes it, validates it, fixes its own errors and saves a draft. Edit the code in the browser or on disk and it **hot-reloads in every open browser, with no restart**. Widgets run in a sandboxed iframe and can only call the operations they declare.
+- **21 integrations** with demo data for each, so everything works with zero credentials:
+
+  | Area | Integrations |
+  |---|---|
+  | Incidents & work | PagerDuty, Jira (paste a ticket URL), Confluence (incl. publishing postmortems) |
+  | Observability | Prometheus / Mimir / Thanos + Alertmanager, Grafana, Loki, Tempo, Datadog (monitors, metrics, logs, APM), New Relic (NRQL, APM, issues) |
+  | Runtime | Kubernetes, Rancher (every managed cluster), AWS |
+  | Delivery | GitHub / GitHub Enterprise (code search, files, commits, PRs, Actions, compare, **open PRs**), Argo CD, Flux, Jenkins, Artifactory |
+  | Security | Prisma Cloud Compute (image CVEs), Prisma Cloud CSPM, CVE intel (NVD, FIRST EPSS, CISA KEV, OSV) |
+  | AI | HolmesGPT (optional: delegate a question to a running HolmesGPT server) |
+
+- **Gated actions:** rollout restart, scale, Rancher restart, Argo CD sync, Flux reconcile, Jenkins build, PagerDuty ack/resolve/note, Jira comment, Confluence page, GitHub pull request. Each needs an explicit confirmation (PRs show the full diff), is signed to your identity, single-use, role-checked and audited.
+
+How it compares with existing open-source projects, and the design behind it: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Widget authoring: [docs/WIDGETS.md](docs/WIDGETS.md).
+
+### What the SRE workflows look like
+
+| You do | OpsDeck does |
+|---|---|
+| Paste `https://acme.atlassian.net/browse/OPS-1412` with the **Ticket to PR** playbook | Reads the ticket, searches GitHub for the config key or error, reads the files, explains the change, and proposes a draft PR. You review the diff and confirm. |
+| "Why is payments-worker crashlooping?" with **Incident RCA** | Checks alerts, golden signals, pod status, previous-container logs, traces, and what changed (Argo/Flux, commits, Grafana deploy annotations), then answers with a timeline, root cause with evidence and confidence, and a proposed mitigation. |
+| Click **Restart** on a degraded workload | Rancher or Kubernetes rolling restart after confirmation, within the RBAC you granted. |
+| **CVE remediation** on a Prisma finding | Enriches the CVE with KEV, EPSS, CVSS and OSV fixed versions, finds where the package or base image is declared (Dockerfile, manifest, Terraform), and proposes the upgrade PR. |
+| "Build a widget that shows..." | A new widget appears under Widgets, live, as a draft. |
 
 ---
 
@@ -189,98 +213,94 @@ With oauth2-proxy on, the app binds to `127.0.0.1` inside the pod. Identity head
 
 | Role | Can |
 |---|---|
-| viewer | See everything and use the assistant (read-only tools) |
-| operator | + low/medium-risk actions: restart, Argo sync, Flux reconcile, Jenkins build, Jira comment |
-| admin | + high-risk actions: scale |
+| viewer | See everything, use the assistant (read-only tools), use widgets, arrange their own dashboard |
+| operator | + low/medium-risk actions (restart, Argo sync, Flux reconcile, Jenkins build, PagerDuty ack/note, Jira comment, Confluence page, GitHub PR) + create, edit and publish widgets |
+| admin | + high-risk actions (scale), approve widget Python, delete widgets |
 
 - **Local mode** (laptop, or a port-forward with auth off): you are admin. **Proxy mode:** roles come from `OPSDECK_ADMINS` / `OPSDECK_OPERATORS` by email.
 - **Every action takes two steps.** *Prepare* returns an HMAC-signed token bound to the user, action and exact parameters. It expires in 5 minutes and can be used once. *Execute* re-checks permissions before running.
-- **The assistant can only prepare.** It never sees a confirm button and cannot execute anything.
-- **Live writes have three independent switches:**
-  - `OPSDECK_ENABLE_WRITES` in the app
-  - `kubernetes.allowWrites` in cluster RBAC
-  - the permissions you grant each tool's token
-- **Audit records go to two places:** SQLite at `$OPSDECK_DATA_DIR/audit.db` (shown under *Audit log*), and stdout as JSON (`{"audit": {...}}`) so Loki or CloudWatch can collect them.
-- **Browser protections:** a strict CSP, no `innerHTML` with upstream data, and a required `X-OpsDeck` header on every POST to block CSRF.
+- **The AI can only prepare.** It never sees a confirm button and cannot execute anything. Widgets can only prepare actions they declared, and the user still confirms.
+- **Live writes have three independent switches:** `OPSDECK_ENABLE_WRITES`, `kubernetes.allowWrites` in cluster RBAC, and the permissions you grant each tool's token.
+- **Widgets are sandboxed.** `view.js` runs in an iframe with `sandbox="allow-scripts"` (opaque origin: no cookies, storage or parent DOM) and a CSP with `connect-src 'none'`. It reaches data only through the parent, which allows just the operations in the widget's manifest; the server enforces the same list. A frame that navigates itself is cut off. `data.py` runs on the server only after an admin approves its exact SHA-256; any edit revokes the approval. A lint blocks imports outside an allowlist, dunder access, `exec`/`eval`/`open`. Treat approval like a code review: the lint is not a sandbox.
+- **Audit records** (actions, widget saves, approvals, deletions) go to SQLite at `$OPSDECK_DATA_DIR/audit.db` (shown under *Audit log*) and to stdout as JSON for Loki or CloudWatch.
+- **Browser protections:** a strict CSP, no `innerHTML` with upstream data, and a required `X-OpsDeck` header on every state-changing call to block CSRF.
+- **Prompt injection:** tool output is labelled untrusted in the system prompt, and the design does not rely on the model behaving: it cannot execute changes, and every proposal shows the exact parameters (and diff) to a human.
 
 ---
 
-## 4. Add your own widget
+## 4. Widgets
 
-An integration is one Python file. It declares its operations; the UI and the assistant's tools are generated from those declarations, so you write no front-end code.
+![Widget editor](docs/img/editor.png)
+
+- **Widgets** page: gallery of built-in and team widgets, plus a box to describe a new one. **My dashboard**: each user's own layout (add, remove, reorder, resize).
+- **Editor:** `widget.json`, `view.js` and optional `data.py` side by side with a live preview, problems list (validation, Python lint, runtime errors from the frame), "Fix with AI", "Change it with AI", version history with one-click rollback, publish/unpublish and Python approval.
+- **Hot reload:** a file watcher on `$OPSDECK_DATA_DIR/widgets` (and the built-ins) reloads a widget the moment any file changes, whether from the editor, the AI, `git pull` or `vim`, and pushes a server-sent event; every open browser re-renders just that widget.
+- **Built-ins** to learn from: *Incident board* (PagerDuty + Prometheus + Grafana + Jira merged by a `data.py`), *Golden signals* (PromQL with inputs and SLO thresholds), *Cluster health* (Rancher clusters, restart, pod logs on click), *CVE hotlist* (Prisma findings enriched with KEV/EPSS per CVE, "Find in code", "Remediate").
+- Full contract and SDK reference: [docs/WIDGETS.md](docs/WIDGETS.md).
+
+To manage team widgets in git, mount a repository checkout at `$OPSDECK_DATA_DIR/widgets` (e.g. with a git-sync sidecar); merged changes hot-reload.
+
+## 5. Add an integration
+
+An integration is one Python file. It declares its operations; the integration page, the AI's tools and the widget catalog are all generated from those declarations.
 
 ```python
-# opsdeck/integrations/pagerduty.py
+# opsdeck/integrations/statuspage.py
 from ..config import env
-from ..registry import Column, Integration, Param, RowAction, Section, action, read_op
-from ._common import check, http_client
+from ..registry import Column, Integration, Param, Section, read_op
+from ._common import ago, check, http_client
 
 
-class PagerDuty(Integration):
-    name, title, category = "pagerduty", "PagerDuty", "Work"
-    description = "Open incidents and on-call."
-    required_env = ("PAGERDUTY_TOKEN",)
+class Statuspage(Integration):
+    name, title, category = "statuspage", "Statuspage", "Incidents"
+    description = "Public status page incidents."
+    required_env = ("STATUSPAGE_TOKEN", "STATUSPAGE_PAGE_ID")
 
-    def _client(self):
-        return http_client(self.settings, "https://api.pagerduty.com",
-                           headers={"Authorization": f"Token token={env('PAGERDUTY_TOKEN')}"})
+    @read_op("Unresolved incidents.", (Param("limit", "integer", default=20),))
+    def incidents(self, limit=20):
+        with http_client(self.settings, "https://api.statuspage.io/v1",
+                         headers={"Authorization": f"OAuth {env('STATUSPAGE_TOKEN')}"}) as c:
+            data = check(c.get(f"/pages/{env('STATUSPAGE_PAGE_ID')}/incidents/unresolved")).json()
+        return [{"name": i["name"], "status": i["status"], "impact": i["impact"], "created": i["created_at"]}
+                for i in data[:limit]]
 
-    @read_op("Open incidents.", (Param("urgency", enum=["high", "low"]),))
-    def incidents(self, urgency=None):
-        params = {"statuses[]": ["triggered", "acknowledged"]}
-        if urgency:
-            params["urgencies[]"] = urgency
-        with self._client() as c:
-            data = check(c.get("/incidents", params=params)).json()
-        return [{"id": i["id"], "title": i["title"], "status": i["status"],
-                 "service": i["service"]["summary"], "created": i["created_at"], "url": i["html_url"]}
-                for i in data["incidents"]]
-
-    def demo_incidents(self, urgency=None):  # sample data so it works without a token
-        return [{"id": "P1", "title": "Checkout latency", "status": "triggered",
-                 "service": "checkout", "created": "2026-10-22T18:00:00Z", "url": ""}]
+    def demo_incidents(self, limit=20):  # sample data so it works without credentials
+        return [{"name": "Degraded checkout", "status": "investigating", "impact": "major", "created": ago(minutes=20)}]
 
     def widget(self):
-        return [Section("Open incidents", "incidents", inputs=["urgency"], refresh_secs=60,
-                        columns=[Column("title"), Column("status", fmt="status"), Column("service"),
-                                 Column("created", fmt="time"), Column("url", fmt="link")])]
-
-    def attention(self):
-        n = len(self.invoke("incidents", {"urgency": "high"}))
-        return [{"severity": "critical", "title": f"{n} high-urgency incidents", "detail": ""}] if n else []
+        return [Section("Unresolved", "incidents", columns=[Column("name"), Column("status", fmt="status"),
+                                                           Column("impact", fmt="status"), Column("created", fmt="time")])]
 ```
 
-Then add `PagerDuty` to `ALL_INTEGRATIONS` in `opsdeck/integrations/__init__.py`.
+Add it to `ALL_INTEGRATIONS` in `opsdeck/integrations/__init__.py`. Actions use `@action(..., risk="low"|"medium"|"high")` and get the confirmation, role and audit flow automatically. Params support `string`, `integer`, `number`, `boolean`, `array` and `object`. Run `make dev` to restart the server on Python changes.
 
-- **Actions** use `@action(..., risk="low"|"medium"|"high")` and automatically get the confirmation, role and audit flow.
-- **Column formats:** `text`, `status`, `time`, `link`, `code`, `num`, `bytes`, `duration`.
-- **Auto-reload:** run `make dev` and the server restarts whenever you save a file. Refresh the browser to pick up the change.
-
----
-
-## 5. Project layout
+## 6. Project layout
 
 ```
 opsdeck/
-  main.py            FastAPI app: REST API, overview, chat, static UI
-  registry.py        Integration base class, @read_op/@action, widget layout types
-  actions.py         prepare -> confirm -> execute, signed single-use tokens
-  auth.py            local vs proxy identity, roles
-  audit.py           SQLite + JSON-log audit trail
-  assistant.py       Claude tool-use loop over the registry
-  integrations/      kubernetes, flux, argocd, jenkins, artifactory, aws, prisma, jira, confluence
-  static/            index.html, app.js, app.css (no build step)
-deploy/helm/opsdeck  Helm chart (RBAC, optional oauth2-proxy sidecar, ingress, PVC)
-deploy/aws/          read-only IAM policy for the AWS widget
-tests/               API, action-flow, auth, assistant loop, and live HTTP paths (mocked)
+  main.py              FastAPI app: REST, SSE (chat stream, widget events), widget frames, static UI
+  llm.py               Providers: Anthropic, Bedrock, OpenAI(-compatible, Azure), Gemini, Ollama
+  assistant.py         Agent loop: tools from the registry, streaming events, proposals only
+  playbooks.py         Markdown playbooks (built-in + $OPSDECK_DATA_DIR/playbooks)
+  registry.py          Integration base class, @read_op/@action, catalog
+  actions.py           prepare -> confirm -> execute, signed single-use tokens
+  auth.py, audit.py    identity and roles; SQLite + JSON audit trail
+  integrations/        21 integrations, each with demo data
+  widgets/             service (store, hot reload, data, approvals, history, dashboards),
+                       builder (AI), checks (validation, Python lint), frame + sdk.js/sdk.css, guide.md
+  widgets_builtin/     incident-board, golden-signals, cluster-health, cve-hotlist
+  static/              index.html, core.js, app.js, widgets.js, app.css (no build step)
+deploy/helm/opsdeck    Helm chart (RBAC, optional oauth2-proxy sidecar, ingress, PVC)
+tests/                 API, actions, auth, providers, agent loop, widgets, builder, GitHub PRs, live HTTP paths (mocked)
 ```
 
 Run the tests with `make test`, or `pytest -q`.
 
-## 6. Known gaps and next steps
+## 7. Known gaps and next steps
 
-- **Single cluster.** Supports one cluster and one Argo CD and Jenkins per instance. Multi-cluster means one `Kubernetes` instance per context.
-- **Prisma.** Covers CSPM alerts only; Prisma Compute (image and runtime vulnerabilities) isn't wired up yet.
-- **Assistant replies.** Answers arrive whole rather than streaming, and chat history lives only in the browser tab.
-- **Audit storage.** Uses SQLite with one replica; for HA, swap `audit.py` for Postgres.
-- **Natural next widgets:** PagerDuty or Opsgenie, Datadog or Grafana and Prometheus (alerts and SLO burn), GitHub (PRs and deploy status), ServiceNow (change records).
+- **Verified against mocks, not your systems.** Every integration's live path is written against the vendor's documented API; most are exercised only against mocked responses. Expect field-name fixes on first contact (New Relic `aiIssues`, Prisma Compute and HolmesGPT payloads are the most likely).
+- **Streaming is per step**, not per token: the UI shows each tool call and each model message as it happens.
+- **Single Kubernetes context** for the native Kubernetes integration; use Rancher for multi-cluster.
+- **Chat history** lives in the browser tab; there is no shared incident timeline yet.
+- **SQLite** for audit with one replica; for HA, swap `audit.py` for Postgres and put widgets on shared storage or git.
+- **Next:** GitLab and Bitbucket, ServiceNow change records, Slack/Teams incident channel bot, scheduled agent runs (e.g. investigate every new P1 automatically), per-integration RBAC, shared chat sessions.

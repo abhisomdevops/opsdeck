@@ -30,10 +30,18 @@
         <span id="chat-status" class="muted small"></span>
         <button id="chat-clear" class="btn ghost small" type="button">New chat</button>
       </div>
+      <div class="chat-tools">
+        <label class="sr-only" for="chat-provider">Model provider</label>
+        <select id="chat-provider" title="LLM provider"></select>
+        <label class="sr-only" for="chat-model">Model</label>
+        <input id="chat-model" list="chat-models" placeholder="model" title="Model (pick or type an id)">
+        <datalist id="chat-models"></datalist>
+      </div>
+      <div id="playbooks" class="playbooks" aria-label="Playbooks"></div>
       <div id="chat-log" class="chat-log" aria-live="polite"></div>
       <form id="chat-form" class="chat-form">
-        <textarea id="chat-input" rows="3" placeholder="Ask about your systems, e.g. why is payments-worker crashing?"></textarea>
-        <button class="btn primary" type="submit">Send</button>
+        <textarea id="chat-input" rows="3" placeholder="Ask about your systems, paste a Jira link, or describe a widget to build"></textarea>
+        <button id="chat-send" class="btn primary" type="submit">Send</button>
       </form>
     </aside>
   </div>

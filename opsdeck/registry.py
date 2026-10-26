@@ -15,6 +15,7 @@ console runs on a laptop with zero credentials.
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
@@ -39,11 +40,12 @@ class OpError(Exception):
 @dataclass
 class Param:
     name: str
-    type: str = "string"  # string | integer | boolean
+    type: str = "string"  # string | integer | number | boolean | array | object
     description: str = ""
     required: bool = False
     default: Any = None
     enum: list[str] | None = None
+    items: dict | None = None  # JSON schema of array items (type="array")
 
     def json_schema(self) -> dict:
         schema: dict[str, Any] = {"type": self.type, "description": self.description}
@@ -51,6 +53,8 @@ class Param:
             schema["enum"] = self.enum
         if self.default is not None:
             schema["default"] = self.default
+        if self.type == "array":
+            schema["items"] = self.items or {"type": "string"}
         return schema
 
     def coerce(self, value: Any) -> Any:
@@ -59,13 +63,22 @@ class Param:
                 raise OpError(f"missing required parameter '{self.name}'")
             return self.default
         try:
+            if self.type in ("array", "object"):
+                if isinstance(value, str):
+                    value = json.loads(value)
+                want = list if self.type == "array" else dict
+                if not isinstance(value, want):
+                    raise TypeError
+                return value
             if self.type == "integer":
                 value = int(value)
+            elif self.type == "number":
+                value = float(value)
             elif self.type == "boolean":
                 value = value if isinstance(value, bool) else str(value).lower() in {"1", "true", "yes", "on"}
             else:
                 value = str(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError):  # json.JSONDecodeError is a ValueError
             raise OpError(f"parameter '{self.name}' must be {self.type}") from None
         if self.enum and value not in self.enum:
             raise OpError(f"parameter '{self.name}' must be one of {self.enum}")
@@ -257,6 +270,18 @@ class Registry:
 
     def all(self) -> list[Integration]:
         return list(self._items.values())
+
+    def catalog(self, kinds: tuple[str, ...] = ("read",)) -> list[dict]:
+        """Flat list of ops (``integration.op``) with params, for the AI and widget builder."""
+        out = []
+        for integ in self.all():
+            for spec in integ.ops().values():
+                if spec.kind in kinds:
+                    out.append({"id": f"{integ.name}.{spec.name}", "integration": integ.name, "op": spec.name,
+                                "kind": spec.kind, "risk": spec.risk, "mode": integ.mode,
+                                "description": spec.description,
+                                "params": {p.name: p.json_schema() | {"required": p.required} for p in spec.params}})
+        return out
 
     def get(self, name: str) -> Integration:
         item = self._items.get(name)

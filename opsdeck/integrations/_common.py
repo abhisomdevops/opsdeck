@@ -17,7 +17,8 @@ TEST_TRANSPORT: httpx.BaseTransport | None = None
 
 
 def http_client(settings: Settings, base_url: str, *, token: str | None = None,
-                user: str | None = None, headers: dict | None = None) -> httpx.Client:
+                user: str | None = None, headers: dict | None = None,
+                timeout: float | None = None) -> httpx.Client:
     """Basic auth when a user is given, bearer token otherwise."""
     hdrs = {"Accept": "application/json", "User-Agent": "opsdeck/0.1"}
     hdrs.update(headers or {})
@@ -27,7 +28,7 @@ def http_client(settings: Settings, base_url: str, *, token: str | None = None,
     elif token:
         hdrs["Authorization"] = f"Bearer {token}"
     return httpx.Client(base_url=base_url.rstrip("/"), headers=hdrs, auth=auth,
-                        verify=settings.verify, timeout=settings.http_timeout,
+                        verify=settings.verify, timeout=timeout or settings.http_timeout,
                         follow_redirects=True, transport=TEST_TRANSPORT)
 
 
@@ -68,9 +69,18 @@ def html_to_text(markup: str, limit: int = 20000) -> str:
     return text if len(text) <= limit else text[:limit] + "\n... (truncated)"
 
 
+def clip(text: str, limit: int) -> str:
+    text = text or ""
+    return text if len(text) <= limit else text[:limit] + f"\n... (truncated, {len(text)} chars total)"
+
+
+def now_utc() -> dt.datetime:
+    return dt.datetime.now(dt.UTC)
+
+
 def tail(text: str, lines: int) -> str:
     parts = (text or "").splitlines()
     return "\n".join(parts[-lines:])
 
 
-__all__ = ["ago", "check", "env", "html_to_text", "http_client", "iso", "tail"]
+__all__ = ["ago", "check", "clip", "env", "html_to_text", "http_client", "iso", "now_utc", "tail"]
