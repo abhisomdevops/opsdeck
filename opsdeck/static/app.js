@@ -1,114 +1,13 @@
 // OpsDeck web UI. No build step: plain ES modules, DOM built with textContent
 // (never innerHTML with untrusted data) so upstream data can't inject markup.
-
-const state = { me: null, integrations: [], byName: {}, timers: [], chat: [], health: {} };
-
-// ------------------------------------------------------------------ helpers
-async function api(path, opts = {}) {
-  const init = { headers: { Accept: "application/json" }, ...opts };
-  if (opts.body !== undefined) {
-    init.method = init.method || "POST";
-    init.headers["Content-Type"] = "application/json";
-    init.headers["X-OpsDeck"] = "1";
-    init.body = JSON.stringify(opts.body);
-  }
-  const res = await fetch(path, init);
-  let data = null;
-  try { data = await res.json(); } catch { /* non-JSON */ }
-  if (!res.ok) throw new Error((data && data.detail) || `${res.status} ${res.statusText}`);
-  return data;
-}
-
-function h(tag, props = {}, ...kids) {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(props || {})) {
-    if (v === undefined || v === null || v === false) continue;
-    if (k === "class") el.className = v;
-    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
-    else if (k === "text") el.textContent = v;
-    else el.setAttribute(k, v === true ? "" : v);
-  }
-  for (const kid of kids.flat()) {
-    if (kid === null || kid === undefined || kid === false) continue;
-    el.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
-  }
-  return el;
-}
-
-const $ = (id) => document.getElementById(id);
-const titleCase = (s) => String(s).replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
-
-function toast(msg, err = false) {
-  const t = h("div", { class: "toast" + (err ? " err" : ""), role: err ? "alert" : "status" }, msg);
-  $("toasts").append(t);
-  setTimeout(() => t.remove(), err ? 9000 : 5000);
-}
-
-function relTime(iso) {
-  if (!iso) return "";
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return String(iso);
-  const s = Math.round((Date.now() - t) / 1000);
-  const abs = Math.abs(s);
-  const unit = abs < 60 ? [abs, "s"] : abs < 3600 ? [Math.round(abs / 60), "m"]
-    : abs < 86400 ? [Math.round(abs / 3600), "h"] : [Math.round(abs / 86400), "d"];
-  return s >= 0 ? `${unit[0]}${unit[1]} ago` : `in ${unit[0]}${unit[1]}`;
-}
-
-const STATUS = {
-  ok: ["executed", "ok", "ready", "running", "succeeded", "success", "synced", "healthy", "active", "done", "closed",
-       "resolved", "true", "completed", "available", "low", "informational", "normal"],
-  warn: ["prepared", "progressing", "pending", "outofsync", "unstable", "warning", "medium", "in progress", "building",
-         "insufficient_data", "suspended", "monitoring", "in review", "scheduled", "high", "unknown", "stopped",
-         "aborted", "notbuilt", "scaleddown", "to do", "running"],
-  crit: ["failed", "failure", "degraded", "error", "crashloopbackoff", "imagepullbackoff", "errimagepull",
-         "oomkilled", "alarm", "critical", "highest", "missing", "false", "createcontainerconfigerror", "evicted"],
-};
-function statusClass(v) {
-  const s = String(v ?? "").toLowerCase();
-  if (STATUS.crit.includes(s)) return "crit";
-  if (s === "running") return "ok";
-  if (STATUS.ok.includes(s)) return "ok";
-  if (STATUS.warn.includes(s)) return "warn";
-  return "";
-}
-
-function fmtBytes(n) {
-  if (n === null || n === undefined || n === "") return "";
-  const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0; let v = Number(n);
-  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
-  return `${v.toFixed(v < 10 && i ? 1 : 0)} ${u[i]}`;
-}
-function fmtDuration(s) {
-  s = Number(s || 0); if (!s) return "";
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
-  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
-}
-
-function cell(value, fmt) {
-  if (value === null || value === undefined) return h("td", {}, "");
-  switch (fmt) {
-    case "status": return h("td", {}, h("span", { class: `badge ${statusClass(value)}` }, String(value)));
-    case "time": return h("td", { title: String(value), class: "nowrap" }, relTime(value));
-    case "link": return h("td", {}, /^https?:\/\//.test(value)
-      ? h("a", { href: value, target: "_blank", rel: "noopener noreferrer" }, "Open") : "");
-    case "code": return h("td", { class: String(value).length <= 40 ? "code nowrap" : "code" }, String(value));
-    case "num": return h("td", { class: "num" }, String(value));
-    case "bytes": return h("td", { class: "num" }, fmtBytes(value));
-    case "duration": return h("td", { class: "num nowrap" }, fmtDuration(value));
-    default: {
-      const text = typeof value === "object" ? JSON.stringify(value) : String(value);
-      return h("td", { class: text.length > 60 ? "wrap" : text.length <= 24 ? "nowrap" : "" }, text);
-    }
-  }
-}
+import { $, api, cell, confirmAction, h, markdown, openModal, state, streamSSE, titleCase, toast } from "./core.js";
+import { renderDashboard, renderEditor, renderGallery, renderWidgetPage, startHotReload } from "./widgets.js";
 
 // ------------------------------------------------------------------- boot
 async function boot() {
   try {
-    state.me = await api("/api/me");
-    state.integrations = await api("/api/integrations");
+    [state.me, state.integrations, state.playbooks] = await Promise.all([
+      api("/api/me"), api("/api/integrations"), api("/api/playbooks").catch(() => [])]);
   } catch (e) {
     $("view").replaceChildren(h("p", { class: "section-msg err" }, `Cannot reach OpsDeck API: ${e.message}`));
     return;
@@ -126,14 +25,17 @@ async function boot() {
   $("audit-link").hidden = me.role === "viewer";
   setupChat();
   renderNav();
+  startHotReload();
   window.addEventListener("hashchange", route);
   route();
 }
 
 function renderNav() {
   const nav = $("nav");
-  nav.replaceChildren(h("a", { href: "#/overview", "data-route": "overview" },
-    h("span", { class: "dot live" }), "Overview"));
+  nav.replaceChildren(
+    h("a", { href: "#/overview", "data-route": "overview" }, h("span", { class: "dot live" }), "Overview"),
+    h("a", { href: "#/dashboard", "data-route": "dashboard" }, h("span", { class: "ico" }, "▦"), "My dashboard"),
+    h("a", { href: "#/widgets", "data-route": "widgets" }, h("span", { class: "ico" }, "✦"), "Widgets"));
   const cats = {};
   for (const i of state.integrations) (cats[i.category] ||= []).push(i);
   for (const [cat, items] of Object.entries(cats)) {
@@ -148,13 +50,18 @@ function renderNav() {
   }
   markActive();
 }
+state.renderNav = renderNav;
 
 function markActive() {
   const cur = location.hash.replace(/^#\//, "") || "overview";
-  for (const a of $("nav").querySelectorAll("a")) a.classList.toggle("active", a.dataset.route === cur);
+  const top = cur.startsWith("widgets") ? "widgets" : cur;
+  for (const a of $("nav").querySelectorAll("a")) a.classList.toggle("active", a.dataset.route === top);
 }
 
-function clearTimers() { state.timers.forEach(clearInterval); state.timers = []; }
+function clearTimers() {
+  state.timers.forEach(clearInterval); state.timers = [];
+  state.cleanups.forEach((f) => { try { f(); } catch { /* ignore */ } }); state.cleanups = [];
+}
 
 function route() {
   clearTimers();
@@ -162,8 +69,14 @@ function route() {
   const path = location.hash.replace(/^#\//, "") || "overview";
   const view = $("view");
   view.replaceChildren();
+  view.scrollTop = 0;
   if (path.startsWith("i/")) return renderIntegration(path.slice(2));
   if (path === "audit") return renderAudit();
+  if (path === "dashboard") return renderDashboard();
+  if (path === "widgets") return renderGallery();
+  if (path === "widgets/new") return renderEditor(null);
+  const m = path.match(/^widgets\/([a-z0-9-]+)(\/edit)?$/);
+  if (m) return m[2] ? renderEditor(m[1]) : renderWidgetPage(m[1]);
   return renderOverview();
 }
 
@@ -333,18 +246,6 @@ function kvList(obj) {
   ]));
 }
 
-// --------------------------------------------------------------- modals
-function openModal({ title, body, actions = [], narrow = false }) {
-  const dlg = $("modal");
-  dlg.className = `modal ${narrow ? "narrow" : ""}`;
-  const close = h("button", { class: "btn ghost small", type: "button", onclick: () => dlg.close() }, "Close");
-  dlg.replaceChildren(
-    h("div", { class: "modal-head" }, h("h2", {}, title), close),
-    h("div", { class: "modal-body" }, body),
-    actions.length ? h("div", { class: "modal-foot" }, actions) : "");
-  if (!dlg.open) dlg.showModal();
-  return dlg;
-}
 
 function promptInputs(integ, spec, names, preset = {}) {
   return new Promise((resolve) => {
@@ -413,27 +314,6 @@ function renderResult(data) {
   return kvList(data);
 }
 
-function confirmAction(prepared, after) {
-  const body = h("div", {},
-    h("p", { class: "confirm-summary" }, prepared.summary),
-    h("dl", { class: "kv" },
-      h("dt", {}, "Risk"), h("dd", {}, h("span", { class: `risk ${prepared.risk}` }, titleCase(prepared.risk))),
-      h("dt", {}, "Target"), h("dd", {}, prepared.mode === "demo" ? "Demo integration (nothing real changes)" : "LIVE system"),
-      h("dt", {}, "Expires"), h("dd", {}, new Date(prepared.expires_at * 1000).toLocaleTimeString())));
-  const go = h("button", { class: `btn ${prepared.mode === "live" ? "danger" : "primary"}`, type: "button" },
-    prepared.mode === "live" ? "Run on live system" : "Run");
-  const dlg = openModal({ title: "Confirm action", body, actions: [go], narrow: true });
-  go.addEventListener("click", async () => {
-    go.disabled = true;
-    try {
-      const res = await api("/api/actions/execute", { body: { token: prepared.token } });
-      dlg.close();
-      toast(`Done: ${prepared.summary.split("\n")[0]}${res.mode === "demo" ? " (demo)" : ""}`);
-      if (after) setTimeout(after, 1500);
-    } catch (e) { go.disabled = false; toast(e.message, true); }
-  });
-  go.focus();
-}
 
 // ------------------------------------------------------------------ audit
 async function renderAudit() {
@@ -456,36 +336,8 @@ async function renderAudit() {
   } catch (e) { box.querySelector(".section-body").replaceChildren(h("p", { class: "section-msg err" }, e.message)); }
 }
 
-// ------------------------------------------------------------------- chat
-function inlineMd(text) {
-  // text is escaped first; only our own tags are introduced afterwards.
-  const esc = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  return esc.replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-}
-function markdown(text) {
-  const root = h("div", {});
-  const lines = String(text || "").split("\n");
-  let list = null, code = null;
-  for (const line of lines) {
-    if (line.trim().startsWith("```")) {
-      if (code) { root.append(h("pre", {}, code.join("\n"))); code = null; } else { code = []; list = null; }
-      continue;
-    }
-    if (code) { code.push(line); continue; }
-    const m = line.match(/^\s*[-*]\s+(.*)$/) || line.match(/^\s*\d+\.\s+(.*)$/);
-    if (m) {
-      if (!list) { list = h("ul", {}); root.append(list); }
-      const li = h("li", {}); li.innerHTML = inlineMd(m[1]); list.append(li); continue;
-    }
-    list = null;
-    if (!line.trim()) continue;
-    const hd = line.match(/^#{1,4}\s+(.*)$/);
-    const el = h(hd ? "h4" : "p", {}); el.innerHTML = inlineMd(hd ? hd[1] : line); root.append(el);
-  }
-  if (code) root.append(h("pre", {}, code.join("\n")));
-  return root;
-}
 
+// ------------------------------------------------------------------- chat
 function setupChat() {
   const shell = document.querySelector(".shell");
   const toggle = $("chat-toggle");
@@ -494,56 +346,151 @@ function setupChat() {
   try { const saved = localStorage.getItem("opsdeck.chat"); if (saved !== null) hidden = saved === "hidden"; } catch { /* ignore */ }
   const apply = () => { shell.classList.toggle("chat-hidden", hidden); toggle.setAttribute("aria-expanded", String(!hidden)); };
   apply();
+  const show = () => { if (hidden) { hidden = false; apply(); } };
   toggle.addEventListener("click", () => {
     hidden = !hidden; apply();
     try { localStorage.setItem("opsdeck.chat", hidden ? "hidden" : "shown"); } catch { /* ignore */ }
     if (!hidden) $("chat-input").focus();
   });
+
   const st = state.me.assistant;
-  $("chat-status").textContent = st.available ? st.model : "Not configured";
+  const usable = st.providers.filter((p) => p.configured);
+  const provSel = $("chat-provider");
+  const modelIn = $("chat-model");
+  provSel.replaceChildren(...(usable.length ? usable : [{ name: "", title: "No provider configured", model: "" }]).map((p) =>
+    h("option", { value: p.name }, p.title)));
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem("opsdeck.llm") || "{}"); } catch { /* ignore */ }
+  provSel.value = usable.some((p) => p.name === saved.provider) ? saved.provider : (st.provider || "");
+  const loadModels = async () => {
+    const p = usable.find((x) => x.name === provSel.value);
+    modelIn.value = saved.provider === provSel.value && saved.model ? saved.model : p?.model || "";
+    modelIn.placeholder = p?.model || "model";
+    $("chat-models").replaceChildren();
+    if (!p) return;
+    try {
+      const { models } = await api(`/api/llm/models?provider=${encodeURIComponent(p.name)}`);
+      $("chat-models").replaceChildren(...models.map((m) => h("option", { value: m })));
+    } catch { /* listing is optional */ }
+  };
+  const remember = () => { saved = { provider: provSel.value, model: modelIn.value.trim() };
+    try { localStorage.setItem("opsdeck.llm", JSON.stringify(saved)); } catch { /* ignore */ } };
+  provSel.addEventListener("change", () => { saved = {}; loadModels(); remember(); });
+  modelIn.addEventListener("change", remember);
+  loadModels();
+  $("chat-status").textContent = st.available ? "" : "Not configured";
   $("chat-status").title = st.detail;
+
+  // playbooks
+  let playbook = null;
+  const pbBox = $("playbooks");
+  const drawPlaybooks = () => pbBox.replaceChildren(...state.playbooks.map((p) => h("button", {
+    type: "button", class: `chip ${playbook === p.id ? "on" : ""}`, title: p.description,
+    onclick: () => {
+      playbook = playbook === p.id ? null : p.id; drawPlaybooks();
+      if (playbook && p.starter && !$("chat-input").value.trim()) $("chat-input").value = p.starter;
+      $("chat-input").focus();
+    } }, p.title)));
+  drawPlaybooks();
+
   const log = $("chat-log");
   const intro = () => log.replaceChildren(h("div", { class: "msg bot" }, st.available
-    ? markdown("Ask about anything across your systems. I can read every connected tool. Changes I propose need your confirmation before they run.")
+    ? markdown("Ask about anything across your systems: incidents, metrics, logs, traces, tickets, code, CVEs. " +
+      "Pick a **playbook** for guided work (RCA, ticket to PR, CVE remediation), or ask me to **build a widget**. " +
+      "Changes I propose need your confirmation before they run.")
     : markdown(`The assistant is off: ${st.detail}. Every widget still works without it.`)));
   intro();
-  $("chat-clear").addEventListener("click", () => { state.chat = []; intro(); });
+  let controller = null;
+  $("chat-clear").addEventListener("click", () => { if (controller) controller.abort(); state.chat = []; intro(); });
   const input = $("chat-input");
   input.disabled = !st.available;
   input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("chat-form").requestSubmit(); } });
+
+  state.ask = (text, { send = false } = {}) => {
+    show();
+    input.value = text;
+    input.focus();
+    if (send) $("chat-form").requestSubmit();
+  };
+
   $("chat-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const text = input.value.trim();
-    if (!text || !st.available) return;
+    if (!text || !st.available || controller) return;
     input.value = "";
     state.chat.push({ role: "user", content: text });
     log.append(h("div", { class: "msg user" }, text));
+    const turn = h("div", { class: "turn" });
+    const trace = h("div", { class: "trace" });
     const pending = h("div", { class: "msg bot muted thinking" }, "Investigating");
-    log.append(pending); log.scrollTop = log.scrollHeight;
+    turn.append(trace, pending);
+    log.append(turn); log.scrollTop = log.scrollHeight;
+    const toolRows = {};
+    let reply = "";
+    const scroll = () => { log.scrollTop = log.scrollHeight; };
+    controller = new AbortController();
+    $("chat-send").textContent = "…";
     try {
-      const res = await api("/api/chat", { body: { messages: state.chat } });
+      await streamSSE("/api/chat/stream", { messages: state.chat, provider: provSel.value || null,
+        model: modelIn.value.trim() || null, playbook }, (ev) => {
+        if (ev.type === "start") {
+          $("chat-status").textContent = `${ev.model}${ev.playbook ? " · " + ev.playbook : ""}`;
+        } else if (ev.type === "tool") {
+          const args = Object.entries(ev.input || {}).map(([k, v]) => `${k}=${typeof v === "object" ? "…" : v}`).join(" ");
+          const row = h("div", { class: "run", title: JSON.stringify(ev.input) }, `… ${ev.tool.replace("__", ".")} ${args}`);
+          toolRows[ev.id] = row; trace.append(row); pending.textContent = "Investigating";
+        } else if (ev.type === "tool_result") {
+          const row = toolRows[ev.id];
+          if (row) { row.className = ev.ok ? "" : "fail"; row.textContent = row.textContent.replace(/^…/, ev.ok ? "✓" : "✗"); }
+        } else if (ev.type === "text") {
+          reply += (reply ? "\n\n" : "") + ev.text;
+          turn.insertBefore(h("div", { class: "msg bot" }, markdown(ev.text)), pending);
+        } else if (ev.type === "proposal") {
+          turn.insertBefore(proposalCard(ev), pending);
+        } else if (ev.type === "widget") {
+          turn.insertBefore(h("div", { class: "proposal widgetcard" },
+            h("p", {}, h("strong", {}, ev.title || ev.id), ` ${ev.ok ? "built" : "saved with problems"} (${ev.status})`),
+            ev.errors && ev.errors.length ? h("p", { class: "muted small" }, ev.errors.slice(0, 2).join("; ")) : null,
+            h("div", { class: "row" }, h("span", { class: "grow" }),
+              h("a", { class: "btn small", href: `#/widgets/${ev.id}/edit` }, "Edit"),
+              h("a", { class: "btn small primary", href: `#/widgets/${ev.id}` }, "Open"))), pending);
+        } else if (ev.type === "error") {
+          turn.insertBefore(h("div", { class: "msg err" }, ev.detail), pending);
+        } else if (ev.type === "done") {
+          const u = ev.usage || {};
+          if (u.input_tokens || u.output_tokens) {
+            turn.append(h("div", { class: "usage" }, `${ev.model} · ${(u.input_tokens || 0).toLocaleString()} in / ` +
+              `${(u.output_tokens || 0).toLocaleString()} out tokens · ${ev.tools.length} tool call(s)`));
+          }
+        }
+        scroll();
+      }, controller.signal);
       pending.remove();
-      if (res.tools.length) {
-        log.append(h("div", { class: "trace" }, res.tools.map((t) =>
-          h("div", { class: t.ok ? "" : "fail", title: JSON.stringify(t.input) },
-            `${t.ok ? "✓" : "✗"} ${t.tool.replace("__", ".")} ${Object.values(t.input || {}).join(" ")}`))));
-      }
-      log.append(h("div", { class: "msg bot" }, markdown(res.reply || "(no answer)")));
-      state.chat.push({ role: "assistant", content: res.reply || "(no answer)" });
-      for (const p of res.proposals) {
-        const card = h("div", { class: "proposal" }, h("p", {}, p.summary),
-          h("div", { class: "row" },
-            h("span", { class: `risk ${p.risk}` }, `${titleCase(p.risk)} risk`), h("span", { class: "grow" }),
-            h("button", { class: "btn small primary", type: "button", onclick: () => confirmAction(p) }, "Review and run")));
-        log.append(card);
-      }
+      state.chat.push({ role: "assistant", content: reply || "(no answer)" });
     } catch (err) {
       pending.remove();
-      log.append(h("div", { class: "msg err" }, err.message));
+      if (err.name !== "AbortError") turn.append(h("div", { class: "msg err" }, err.message));
       state.chat.pop();
+    } finally {
+      controller = null;
+      $("chat-send").textContent = "Send";
+      scroll();
     }
-    log.scrollTop = log.scrollHeight;
   });
+}
+
+function proposalCard(p) {
+  const first = p.summary.split("\n")[0];
+  const run = h("button", { class: "btn small primary", type: "button" }, "Review and run");
+  const card = h("div", { class: "proposal" }, h("p", {}, first),
+    p.summary.includes("\n") ? h("p", { class: "muted small" }, "Details and diff in the review dialog.") : null,
+    h("div", { class: "row" },
+      h("span", { class: `risk ${p.risk}` }, `${titleCase(p.risk)} risk`), h("span", { class: "grow" }), run));
+  run.addEventListener("click", async () => {
+    const res = await confirmAction(p);
+    if (res) { run.disabled = true; run.textContent = "Done"; }
+  });
+  return card;
 }
 
 boot();

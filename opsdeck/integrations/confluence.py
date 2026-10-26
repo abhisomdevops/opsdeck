@@ -7,13 +7,41 @@ CONFLUENCE_TOKEN=personal access token.
 
 from __future__ import annotations
 
+import html
+
 from ..config import env
-from ..registry import Column, Integration, Param, RowAction, Section, read_op
+from ..registry import Column, Integration, Param, RowAction, Section, action, read_op
 from ._common import ago, check, html_to_text, http_client, iso
 
 
 def _cql_escape(text: str) -> str:
     return text.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def text_to_storage(text: str) -> str:
+    """Tiny Markdown subset -> Confluence storage XHTML (escaped)."""
+    out, in_list = [], False
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("- ", "* ")):
+            if not in_list:
+                out.append("<ul>")
+                in_list = True
+            out.append(f"<li>{html.escape(stripped[2:])}</li>")
+            continue
+        if in_list:
+            out.append("</ul>")
+            in_list = False
+        if not stripped:
+            continue
+        level = len(stripped) - len(stripped.lstrip("#"))
+        if 1 <= level <= 4 and stripped[level:level + 1] == " ":
+            out.append(f"<h{level}>{html.escape(stripped[level + 1:])}</h{level}>")
+        else:
+            out.append(f"<p>{html.escape(stripped)}</p>")
+    if in_list:
+        out.append("</ul>")
+    return "".join(out)
 
 
 class Confluence(Integration):
@@ -62,6 +90,27 @@ class Confluence(Integration):
                 "updated": iso((p.get("version") or {}).get("when")),
                 "text": html_to_text(((p.get("body") or {}).get("storage") or {}).get("value", ""))}
 
+    @action("Create a page (e.g. a postmortem) from Markdown-ish text.", (
+        Param("space", required=True, description="Space key"),
+        Param("title", required=True),
+        Param("body", required=True, description="Page text. Lines starting with '# ' become headings, '- ' bullets."),
+        Param("parent_id", description="Optional parent page id"),
+    ), risk="low")
+    def create_page(self, space, title, body, parent_id=None):
+        payload = {"type": "page", "title": title, "space": {"key": space},
+                   "body": {"storage": {"value": text_to_storage(body), "representation": "storage"}}}
+        if parent_id:
+            payload["ancestors"] = [{"id": str(parent_id)}]
+        with self._client() as c:
+            p = check(c.post("/rest/api/content", json=payload)).json()
+        return {"created": p.get("id"), "title": title,
+                "url": env("CONFLUENCE_URL").rstrip("/") + (p.get("_links") or {}).get("webui", "")}
+
+    def describe_action(self, op, params):
+        if op == "create_page":
+            return f"Create Confluence page \"{params['title']}\" in space {params['space']}:\n\n{params['body'][:3000]}"
+        return super().describe_action(op, params)
+
     def widget(self):
         cols = [Column("title"), Column("space"), Column("updated", fmt="time"), Column("by"),
                 Column("url", "link", fmt="link")]
@@ -86,6 +135,10 @@ class Confluence(Integration):
                 for i, t, s, h in self._PAGES if (not space or s == space)]
         hits = [r for r in rows if any(w in r["title"].lower() for w in q.split())]
         return (hits or rows)[:limit]
+
+    def demo_create_page(self, space, title, body, parent_id=None):
+        return {"created": "1099", "title": title, "url": f"https://acme.atlassian.net/wiki/spaces/{space}/pages/1099",
+                "demo": True}
 
     def demo_page(self, id):
         return {"title": "Runbook: payments-worker", "space": "SRE", "updated": ago(hours=12), "text": (

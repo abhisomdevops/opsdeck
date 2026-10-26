@@ -8,7 +8,24 @@ config:
   OPSDECK_ENV_NAME: prod
   OPSDECK_DEMO: "auto"
   OPSDECK_ENABLE_WRITES: "false"
-  OPSDECK_LLM_PROVIDER: anthropic
+  OPSDECK_LLM_PROVIDER: anthropic       # anthropic | bedrock | openai | gemini | ollama | none
+  # OPSDECK_WIDGET_PYTHON: approval     # approval (admin approves each data.py) | off | trusted
+  # OPSDECK_WIDGET_AUTHOR_ROLE: operator
+  # OPENAI_BASE_URL: http://litellm.ai.svc:4000/v1   # any OpenAI-compatible gateway
+  # OLLAMA_URL: http://ollama.ai.svc:11434
+  # GITHUB_ORG: acme
+  # GITHUB_API_URL: https://ghe.acme.com/api/v3
+  # PROMETHEUS_URL: http://prometheus-operated.monitoring.svc:9090
+  # ALERTMANAGER_URL: http://alertmanager-operated.monitoring.svc:9093
+  # LOKI_URL: http://loki-gateway.monitoring.svc
+  # TEMPO_URL: http://tempo-query-frontend.monitoring.svc:3200
+  # GRAFANA_URL: https://grafana.acme.internal
+  # RANCHER_URL: https://rancher.acme.internal
+  # DD_SITE: datadoghq.com
+  # NEW_RELIC_ACCOUNT_ID: "1234567"
+  # PRISMA_COMPUTE_URL: https://us-east1.cloud.twistlock.com/us-1-111111111
+  # CVE_INTEL_ENABLED: "true"
+  # HOLMES_URL: http://holmesgpt.holmes.svc:5050
   # K8S_NAMESPACES: "payments,checkout,flux-system"
   # AWS_REGIONS: "us-east-1"
   # ARGOCD_URL: https://argocd.acme.internal
@@ -20,7 +37,9 @@ config:
 
 # Name of an existing Secret holding tokens (ANTHROPIC_API_KEY, ARGOCD_TOKEN,
 # JENKINS_USER, JENKINS_TOKEN, JIRA_USER, JIRA_TOKEN, CONFLUENCE_USER, CONFLUENCE_TOKEN,
-# ARTIFACTORY_TOKEN, PRISMA_ACCESS_KEY, PRISMA_SECRET_KEY, OPSDECK_SECRET).
+# ARTIFACTORY_TOKEN, PRISMA_ACCESS_KEY, PRISMA_SECRET_KEY, OPSDECK_SECRET, OPENAI_API_KEY, GEMINI_API_KEY,
+# GITHUB_TOKEN, PAGERDUTY_TOKEN, PAGERDUTY_FROM, GRAFANA_TOKEN, DD_API_KEY, DD_APP_KEY, NEW_RELIC_API_KEY,
+# RANCHER_TOKEN, PROMETHEUS_TOKEN, LOKI_TOKEN, TEMPO_TOKEN, NVD_API_KEY).
 # Create it with: kubectl -n opsdeck create secret generic opsdeck-secrets --from-env-file=prod.env
 existingSecret: opsdeck-secrets
 
@@ -65,7 +84,7 @@ ingress:
   tlsSecret: ""
 
 persistence:
-  enabled: false              # keep the audit DB across restarts
+  enabled: false              # keep the audit DB, custom widgets, approvals and dashboards across restarts
   size: 1Gi
   storageClass: ""
 

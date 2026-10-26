@@ -1,0 +1,26 @@
+{
+  "id": "golden-signals",
+  "title": "Golden signals",
+  "description": "Error ratio, p99 latency and traffic for one service from Prometheus, with SLO thresholds.",
+  "category": "Observability",
+  "width": "half",
+  "height": 420,
+  "refresh_secs": 60,
+  "inputs": [
+    {"name": "service", "label": "Service", "type": "string", "default": "checkout-web"},
+    {"name": "minutes", "label": "Window (min)", "type": "select", "options": ["30", "60", "180", "360"], "default": "60"}
+  ],
+  "sources": [
+    {"id": "errors", "integration": "prometheus", "op": "query_range", "params": {
+      "query": "sum(rate(http_requests_total{service=\"{{inputs.service}}\",code=~\"5..\"}[5m])) / sum(rate(http_requests_total{service=\"{{inputs.service}}\"}[5m]))",
+      "minutes": "{{inputs.minutes}}"}},
+    {"id": "latency", "integration": "prometheus", "op": "query_range", "params": {
+      "query": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{service=\"{{inputs.service}}\"}[5m])))",
+      "minutes": "{{inputs.minutes}}"}},
+    {"id": "traffic", "integration": "prometheus", "op": "query_range", "params": {
+      "query": "sum(rate(http_requests_total{service=\"{{inputs.service}}\"}[5m]))",
+      "minutes": "{{inputs.minutes}}"}}
+  ],
+  "uses": [],
+  "status": "published"
+}

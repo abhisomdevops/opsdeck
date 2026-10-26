@@ -1,0 +1,17 @@
+{
+  "id": "cluster-health",
+  "title": "Cluster health",
+  "description": "Every Rancher cluster at a glance, degraded workloads with restart, and unhealthy pods with logs.",
+  "category": "Runtime",
+  "width": "half",
+  "height": 420,
+  "refresh_secs": 60,
+  "inputs": [],
+  "sources": [
+    {"id": "clusters", "integration": "rancher", "op": "clusters", "params": {}},
+    {"id": "workloads", "integration": "rancher", "op": "workloads", "params": {"problems_only": true}},
+    {"id": "pods", "integration": "kubernetes", "op": "pods", "params": {"problems_only": true}}
+  ],
+  "uses": ["rancher.restart", "kubernetes.pod_logs"],
+  "status": "published"
+}

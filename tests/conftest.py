@@ -8,7 +8,10 @@ from fastapi.testclient import TestClient
 # Make sure tests never pick up a developer's real credentials or .env.
 os.environ["OPSDECK_ENV_FILE"] = "/nonexistent/.env"
 for var in list(os.environ):
-    if var.split("_")[0] in {"JIRA", "CONFLUENCE", "JENKINS", "ARGOCD", "ARTIFACTORY", "PRISMA", "K8S", "AWS", "ANTHROPIC"}:
+    if var.split("_")[0] in {"JIRA", "CONFLUENCE", "JENKINS", "ARGOCD", "ARTIFACTORY", "PRISMA", "K8S", "AWS", "ANTHROPIC",
+                                  "GITHUB", "PROMETHEUS", "ALERTMANAGER", "LOKI", "TEMPO", "GRAFANA", "PAGERDUTY", "DD",
+                                  "NEW", "CVE", "NVD", "RANCHER", "HOLMES", "OPENAI", "AZURE", "GEMINI", "GOOGLE", "OLLAMA",
+                                  "BEDROCK"}:
         del os.environ[var]
 os.environ.pop("KUBERNETES_SERVICE_HOST", None)
 
